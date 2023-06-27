@@ -12,12 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
-//
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
 /***************************************************************************************************
- * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights
+ * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
  *reserved. SPDX-License-Identifier: BSD-3-Clause
  *
  * Redistribution and use in source and binary forms, with or without
@@ -234,7 +230,7 @@ class EpiloguePipelined : public EpilogueBase<Shape_,
   /// Constructor
   CUTLASS_DEVICE
   EpiloguePipelined(typename Base::SharedStorage&
-                        shared_storage,  ///< Shared storage object   //NOLINT
+                        shared_storage,  // NOLINT ///< Shared storage object
                     int thread_idx,  ///< ID of a thread within the threadblock
                     int warp_idx,    ///< ID of warp within threadblock
                     int lane_idx     ///< Id of thread within warp
@@ -305,10 +301,9 @@ class EpiloguePipelined : public EpilogueBase<Shape_,
     }
 
     CUTLASS_DEVICE
-    static void push(
-        size_t pos,
-        AccumulatorFragmentIterator const& iterator_begin,  // NOLINT
-        WarpTileIterator& warp_tile_iterator) {             // NOLINT
+    static void push(size_t pos,
+                     AccumulatorFragmentIterator const& iterator_begin,
+                     WarpTileIterator& warp_tile_iterator) {  // NOLINT
       int dummy[] = {(pos == (Seq * Base::kFragmentsPerIteration)) &&
                      (helper<Seq * Base::kFragmentsPerIteration>(
                           iterator_begin, warp_tile_iterator),
@@ -432,10 +427,9 @@ class EpiloguePipelined : public EpilogueBase<Shape_,
     }
 
     CUTLASS_DEVICE
-    static void push(
-        size_t pos,
-        AccumulatorFragmentIterator const& iterator_begin,  // NOLINT
-        WarpTileIterator& warp_tile_iterator) {             // NOLINT
+    static void push(size_t pos,
+                     AccumulatorFragmentIterator const& iterator_begin,
+                     WarpTileIterator& warp_tile_iterator) {  // NOLINT
       int dummy[] = {(pos == Seq) &&
                      (helper<Seq>(iterator_begin, warp_tile_iterator), 0)...};
     }

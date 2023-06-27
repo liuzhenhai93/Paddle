@@ -12,13 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
-//
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
-
 /***************************************************************************************************
- * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights
+ * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
  *reserved. SPDX-License-Identifier: BSD-3-Clause
  *
  * Redistribution and use in source and binary forms, with or without
@@ -261,10 +256,10 @@ class CustomMmaPipelined : public CustomMmaBase<Shape_, Policy_, 2> {
   /// Perform a threadblock-scoped matrix multiply-accumulate
   CUTLASS_DEVICE
   void operator()(
-      int gemm_k_iterations,       ///< number of iterations of the mainloop
-      FragmentC& accum,            ///< destination accumulator tile   //NOLINT
-      IteratorA iterator_A,        ///< iterator over A operand in global memory
-      IteratorB iterator_B,        ///< iterator over B operand in global memory
+      int gemm_k_iterations,  ///< number of iterations of the mainloop
+      FragmentC& accum,       // NOLINT       ///< destination accumulator tile
+      IteratorA iterator_A,   ///< iterator over A operand in global memory
+      IteratorB iterator_B,   ///< iterator over B operand in global memory
       FragmentC const& src_accum,  ///< source accumulator tile
       TransformA transform_A =
           TransformA(),  ///< transformation applied to A fragment
@@ -321,7 +316,8 @@ class CustomMmaPipelined : public CustomMmaBase<Shape_, Policy_, 2> {
     iterator_B.clear_mask(gemm_k_iterations <= 1);
 
     // Issue loads during the first warp-level matrix multiply-add *AFTER*
-    // issuing shared memory loads (which have the tighest latency requirement).
+    // issuing shared memory loads (which have the tightest latency
+    // requirement).
 
     //
     // Mainloop

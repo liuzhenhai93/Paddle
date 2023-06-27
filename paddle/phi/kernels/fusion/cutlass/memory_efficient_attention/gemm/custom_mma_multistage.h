@@ -12,13 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
-//
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
-
 /***************************************************************************************************
- * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights
+ * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
  *reserved. SPDX-License-Identifier: BSD-3-Clause
  *
  * Redistribution and use in source and binary forms, with or without
@@ -742,7 +737,7 @@ class CustomMmaMultistage : public CustomMmaBase<Shape_, Policy_, Stages> {
     }
 
     if (SharedMemoryClear == SharedMemoryClearOption::kZfill) {
-      // commit and drain all pending and predicated LDGSTS pnz from the GEMM
+      // commit and drain all pending and predicated cp.async pnz from the GEMM
       // mainloop
       cutlass::arch::cp_async_fence();
       cutlass::arch::cp_async_wait<0>();

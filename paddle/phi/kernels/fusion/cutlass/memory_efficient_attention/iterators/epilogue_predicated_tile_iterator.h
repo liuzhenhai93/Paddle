@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
 //
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
 
 /***************************************************************************************************
- * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights
+ * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
  *reserved. SPDX-License-Identifier: BSD-3-Clause
  *
  * Redistribution and use in source and binary forms, with or without
@@ -143,7 +144,7 @@ class PredicatedTileIteratorPrefetch {
     CUTLASS_HOST_DEVICE
     Params(Layout const& layout)  // NOLINT
         : PredicatedTileIteratorParams(
-              layout.stride(0) * static_cast<int>(sizeof(AccessType)) /
+              layout.stride(0) * int(sizeof(AccessType)) /  // NOLINT
                   kElementsPerAccess,
               make_OutputTileThreadMapDesc<ThreadMap>()) {}
 
@@ -348,8 +349,8 @@ class PredicatedTileIteratorPrefetch {
 
   /// Loads a fragment from memory
   CUTLASS_DEVICE
-  void load_with_byte_offset(Fragment& frag,               // NOLINT
-                             int64_t byte_offset) const {  // NOLINT
+  void load_with_byte_offset(Fragment& frag,  // NOLINT
+                             int64_t byte_offset) const {
     uint8_t* byte_pointer = byte_pointer_;
     AccessType* frag_ptr = reinterpret_cast<AccessType*>(&frag);
 

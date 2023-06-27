@@ -12,11 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
-//
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
-
 /*! \file
   \brief Epilogue for threadblock scoped GEMMs using Tensor Ops.
 
@@ -54,9 +49,9 @@
 #include "cutlass/epilogue/threadblock/epilogue_base.h"
 #include "cutlass/epilogue/threadblock/predicated_tile_iterator.h"
 
-#include "./epilogue_pipelined.h"
 #include "cutlass/epilogue/thread/scale_type.h"
-#include "cutlass/numeric_conversion.h"
+#include "cutlass/numeric_conversion.h"  // NOLINT
+#include "epilogue_pipelined.h"          // NOLINT
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -72,9 +67,9 @@ namespace thread {
 //     alpha = 1 / s_prime (to normalize when isLast=True, 1 otherwise)
 //     beta = alpha / m_prime (renormalize the output when the max changes)
 //     source is the current output
-template <typename ElementOutput_,  /// < Data type used to store tensors
+template <typename ElementOutput_,  ///< Data type used to store tensors
           typename ElementSource_,  // < Data type for source (usually matches
-                                    // `ElementOutput`)
+                                    // ElementOutput`)
           int Count,  ///< Number of elements computed per operation.
                       ///< Usually it is 128/sizeof_bits<ElementOutput_>,
                       ///< but we use 64 or 32 sometimes when there are not

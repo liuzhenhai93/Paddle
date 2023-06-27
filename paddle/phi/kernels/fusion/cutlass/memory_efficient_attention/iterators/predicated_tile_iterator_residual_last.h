@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
 //
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
 
 /***************************************************************************************************
- * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights
+ * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
  *reserved. SPDX-License-Identifier: BSD-3-Clause
  *
  * Redistribution and use in source and binary forms, with or without
@@ -390,7 +391,7 @@ class PredicatedTileIteratorResidualLast<Shape_,
               reinterpret_cast<char const*>(address_iterator_.get()) +
               byte_offset;
 
-          AccessType const* access_ptr =  // NOLINT
+          AccessType const* access_ptr =
               reinterpret_cast<AccessType const*>(byte_ptr);
 
           cutlass::arch::global_load<AccessType, sizeof(AccessType)>(

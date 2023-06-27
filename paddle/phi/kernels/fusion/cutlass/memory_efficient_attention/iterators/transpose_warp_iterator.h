@@ -1,3 +1,4 @@
+
 // Copyright (c) 2023 PaddlePaddle Authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,11 +12,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
 //
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
 
 #pragma once
 
@@ -32,10 +34,12 @@ template <
     cutlass::gemm::Operand Operand,
     /// Data type of A elements
     typename Element,
+    typename InstructionShape,
     bool kTranspose>
 struct TransposeWarpIterator<
-    cutlass::gemm::warp::WarpIteratorFromSmem<Operand, Element, kTranspose>> {
-  using Iterator =
-      cutlass::gemm::warp::WarpIteratorFromSmem<Operand, Element, !kTranspose>;
+    cutlass::gemm::warp::
+        WarpIteratorFromSmem<Operand, Element, InstructionShape, kTranspose>> {
+  using Iterator = cutlass::gemm::warp::
+      WarpIteratorFromSmem<Operand, Element, InstructionShape, !kTranspose>;
   static bool constexpr kSupportsTranspose = true;
 };

@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
 //
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
 
 #pragma once
 
@@ -58,9 +59,9 @@ struct MakeCustomMma<
   static int constexpr kStages =
       kMaxK == cutlass::platform::numeric_limits<int>::max()
           ? Stages
-          : cutlass::const_min(Stages,
-                               (kMaxK + static_cast<int>(Shape::kK) - 1) /
-                                   static_cast<int>(Shape::kK));
+          : cutlass::const_min(
+                Stages,
+                (kMaxK + int(Shape::kK) - 1) / int(Shape::kK));  // NOLINT
   using Mma = cutlass::gemm::threadblock::CustomMmaMultistage<Shape,
                                                               IteratorA,
                                                               SmemIteratorA,

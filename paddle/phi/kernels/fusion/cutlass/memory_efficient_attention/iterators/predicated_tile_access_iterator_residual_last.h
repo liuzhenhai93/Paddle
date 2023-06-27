@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
 //
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
 
 /***************************************************************************************************
- * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights
+ * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
  *reserved. SPDX-License-Identifier: BSD-3-Clause
  *
  * Redistribution and use in source and binary forms, with or without
@@ -189,7 +190,7 @@ class PredicatedTileAccessIteratorResidualLast<Shape_,
   Mask residual_tile_mask;
 
   /// Parameters object with precomputed internal state
-  Params const& params_;
+  Params params_;
 
   /// Internal pointer to first access of tile
   BytePointer pointer_;
@@ -363,7 +364,7 @@ class PredicatedTileAccessIteratorResidualLast<Shape_,
 
     ++the_predicates.iteration_vector_;
     if (the_predicates.iteration_vector_ < kAccessesPerVector) {
-      return *this;  // NOLINT
+      return *this;
     }
 
     the_predicates.iteration_vector_ = 0;
@@ -975,7 +976,7 @@ class PredicatedTileAccessIteratorResidualLast<Shape_,
   //
 
   /// Parameters object with precomputed internal state
-  Params const& params_;
+  Params params_;
 
   /// Internal pointer to first access of tile
   BytePointer pointer_;
