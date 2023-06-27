@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//  Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
 //
-//  This source code is licensed under the BSD license found in the
-//  LICENSE file in the root directory of this source tree.
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
 
 #pragma once
 
@@ -100,10 +101,10 @@
     std::cerr << #PTR " is not correctly aligned\n"; \
     return false;                                    \
   }
-#define PADDLE_CHECK(COND, ERR)     \
-  if (!(COND)) {                    \
-    std::cerr << #COND " failed\n"; \
-    return false;                   \
+#define PADDLE_CHECK(COND, ERR)                         \
+  if (!(COND)) {                                        \
+    std::cerr << "'" #COND "' failed: " << ERR << "\n"; \
+    return false;                                       \
   }
 #endif
 
@@ -126,40 +127,9 @@ constexpr CUTLASS_HOST_DEVICE integer align_up(integer n, integer m) {
   return ((n + m - 1) / m) * m;
 }
 
-inline int32_t getMaximumSharedMemoryPerBlockKb(int cc) {
-  // from:
-  // https://docs.nvidia.com/cuda/cuda-c-programming-guide/#features-and-technical-specifications-technical-specifications-per-compute-capability
-  switch (cc) {
-    case 50:
-    case 52:
-    case 53:
-    case 60:
-    case 61:
-    case 62:
-      return 64;
-    case 70:
-    case 72:
-      return 96;
-    case 75:
-      return 64;
-    case 80:
-      return 163;
-    case 86:
-      return 99;
-    case 87:
-      return 163;
-    case 89:
-      return 99;
-    case 90:
-      return 227;
-    default:
-      return 0;
-  }
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // Determine the type of GEMM we do (TensorCores or not, Shapes ...)
-// TODO(xformers): Maybe we could rely on Cutlass's DefaultGemm templates
+// TODO: Maybe we could rely on Cutlass's DefaultGemm templates // NOLINT
 ////////////////////////////////////////////////////////////////////////////////
 
 // Fallback to Simt (FMA on cuda cores) if not in a special case below
@@ -242,8 +212,17 @@ struct call_conditional<false, TA, TB> {
 // The cheapest way to do it is just to broadcast it from lane 0
 ////////////////////////////////////////////////////////////////////////////////
 
-CUTLASS_DEVICE int32_t warp_uniform(int32_t value) {
-  return (int32_t)__shfl_sync(0xffffffff, (unsigned)value, 0);
+template <typename T>
+CUTLASS_DEVICE T warp_uniform(T value) {
+  struct {
+    union {
+      T value;
+      uint32_t asInt;
+    };
+  } p;
+  p.value = value;
+  p.asInt = __shfl_sync(0xffffffff, (unsigned)p.asInt, 0);
+  return p.value;
 }
 
 template <typename T>
