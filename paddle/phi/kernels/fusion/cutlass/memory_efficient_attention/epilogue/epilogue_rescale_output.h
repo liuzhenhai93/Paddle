@@ -69,7 +69,7 @@ namespace thread {
 //     source is the current output
 template <typename ElementOutput_,  ///< Data type used to store tensors
           typename ElementSource_,  // < Data type for source (usually matches
-                                    // ElementOutput`)
+                                    // ElementOutput`)   // NOLINT
           int Count,  ///< Number of elements computed per operation.
                       ///< Usually it is 128/sizeof_bits<ElementOutput_>,
                       ///< but we use 64 or 32 sometimes when there are not
