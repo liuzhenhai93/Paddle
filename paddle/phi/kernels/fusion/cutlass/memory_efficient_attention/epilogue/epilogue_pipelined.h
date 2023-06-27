@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 /***************************************************************************************************
  * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
  *reserved. SPDX-License-Identifier: BSD-3-Clause
@@ -230,7 +236,7 @@ class EpiloguePipelined : public EpilogueBase<Shape_,
   /// Constructor
   CUTLASS_DEVICE
   EpiloguePipelined(typename Base::SharedStorage&
-                        shared_storage,  // NOLINT ///< Shared storage object
+                        shared_storage,  ///< Shared storage object  // NOLINT
                     int thread_idx,  ///< ID of a thread within the threadblock
                     int warp_idx,    ///< ID of warp within threadblock
                     int lane_idx     ///< Id of thread within warp

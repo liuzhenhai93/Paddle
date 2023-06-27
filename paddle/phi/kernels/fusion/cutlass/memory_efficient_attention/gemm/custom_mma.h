@@ -59,9 +59,9 @@ struct MakeCustomMma<
   static int constexpr kStages =
       kMaxK == cutlass::platform::numeric_limits<int>::max()
           ? Stages
-          : cutlass::const_min(
-                Stages,
-                (kMaxK + int(Shape::kK) - 1) / int(Shape::kK));  // NOLINT
+          : cutlass::const_min(Stages,
+                               (kMaxK + static_cast<int>(Shape::kK) - 1) /
+                                   static_cast<int>(Shape::kK));
   using Mma = cutlass::gemm::threadblock::CustomMmaMultistage<Shape,
                                                               IteratorA,
                                                               SmemIteratorA,

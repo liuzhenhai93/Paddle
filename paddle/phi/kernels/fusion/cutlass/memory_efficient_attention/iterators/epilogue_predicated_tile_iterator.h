@@ -144,7 +144,7 @@ class PredicatedTileIteratorPrefetch {
     CUTLASS_HOST_DEVICE
     Params(Layout const& layout)  // NOLINT
         : PredicatedTileIteratorParams(
-              layout.stride(0) * int(sizeof(AccessType)) /  // NOLINT
+              layout.stride(0) * static_cast<int>(sizeof(AccessType)) /
                   kElementsPerAccess,
               make_OutputTileThreadMapDesc<ThreadMap>()) {}
 

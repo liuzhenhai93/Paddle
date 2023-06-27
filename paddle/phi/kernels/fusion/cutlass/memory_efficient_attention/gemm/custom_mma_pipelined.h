@@ -11,6 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
 
 /***************************************************************************************************
  * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
@@ -256,10 +262,10 @@ class CustomMmaPipelined : public CustomMmaBase<Shape_, Policy_, 2> {
   /// Perform a threadblock-scoped matrix multiply-accumulate
   CUTLASS_DEVICE
   void operator()(
-      int gemm_k_iterations,  ///< number of iterations of the mainloop
-      FragmentC& accum,       // NOLINT       ///< destination accumulator tile
-      IteratorA iterator_A,   ///< iterator over A operand in global memory
-      IteratorB iterator_B,   ///< iterator over B operand in global memory
+      int gemm_k_iterations,       ///< number of iterations of the mainloop
+      FragmentC& accum,            ///< destination accumulator tile  // NOLINT
+      IteratorA iterator_A,        ///< iterator over A operand in global memory
+      IteratorB iterator_B,        ///< iterator over B operand in global memory
       FragmentC const& src_accum,  ///< source accumulator tile
       TransformA transform_A =
           TransformA(),  ///< transformation applied to A fragment

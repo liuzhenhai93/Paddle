@@ -540,7 +540,7 @@ class MmaPipelinedFromSharedMemory
   CUTLASS_DEVICE
   void operator()(
       int gemm_k_iterations,  ///< number of iterations of the mainloop
-      FragmentC& accum,       // NOLINT  ///< destination accumulator tile
+      FragmentC& accum,       ///< destination accumulator tile  // NOLINT
       // IteratorA iterator_A,                             ///< iterator over A
       // operand in global memory
       IteratorB iterator_B,        ///< iterator over B operand in global memory
