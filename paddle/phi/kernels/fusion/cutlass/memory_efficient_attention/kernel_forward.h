@@ -65,7 +65,7 @@ using namespace gemm_kernel_utils;  // NOLINT
 
 namespace {  // NOLINT
 template <typename scalar_t, typename Arch>
-constexpr int getWarpsPerSm() {
+constexpr int getWarpsPerSmFw() {
   return (Arch::kMinComputeCapability >= 80 &&
                   !cutlass::platform::is_same<scalar_t, float>::value
               ? 16
@@ -73,10 +73,11 @@ constexpr int getWarpsPerSm() {
 }
 static CUTLASS_DEVICE float atomicMaxFloat(float* addr, float value) {
   // source: https://stackoverflow.com/a/51549250
-  return (value >= 0) ? __int_as_float(atomicMax(
-                            (int*)addr, __float_as_int(value)))  // NOLINT
-                      : __uint_as_float(atomicMin((unsigned int*)addr,
-                                                  __float_as_uint(value)));
+  return (value >= 0)
+             ? __int_as_float(
+                   atomicMax((int*)addr, __float_as_int(value)))  // NOLINT
+             : __uint_as_float(atomicMin((unsigned int*)addr,     // NOLINT
+                                         __float_as_uint(value)));
 }
 }  // namespace
 
@@ -87,14 +88,23 @@ template <
     typename ArchTag,
     // If Q/K/V are correctly aligned in memory and we can run a fast kernel
     bool isAligned_,
-    int kQueriesPerBlock,
+    int kQueriesPerBlock_,
     int kKeysPerBlock_,
-    bool kSingleValueIteration_,  // = `value.shape[-1] <= kKeysPerBlock`
+    // upperbound on `max(value.shape[-1], query.shape[-1])`
+    int kMaxK_ =
+        (int)cutlass::platform::numeric_limits<uint32_t>::max(),  // NOLINT
     // This is quite slower on V100 for some reason
     // Set to false if you know at compile-time you will never need dropout
     bool kSupportsDropout_ = true,
     bool kSupportsBias_ = true>
 struct AttentionKernel {
+  enum CustomMaskType {
+    NoCustomMask = 0,
+    CausalFromTopLeft = 1,
+    CausalFromBottomRight = 2,
+    NumCustomMaskTypes,
+  };
+
   using scalar_t = scalar_t_;
   using accum_t = float;
   using lse_scalar_t = float;
@@ -106,11 +116,14 @@ struct AttentionKernel {
   static constexpr bool kSupportsDropout = kSupportsDropout_;
   static constexpr bool kSupportsBias = kSupportsBias_;
   static constexpr int kKeysPerBlock = kKeysPerBlock_;
+  static constexpr int kQueriesPerBlock = kQueriesPerBlock_;
+  static constexpr int kMaxK = kMaxK_;
   static constexpr bool kIsAligned = isAligned_;
-  static constexpr bool kSingleValueIteration = kSingleValueIteration_;
+  static constexpr bool kSingleValueIteration = kMaxK <= kKeysPerBlock;
   static constexpr int32_t kAlignLSE = 32;  // block size of backward
-  static constexpr bool kPreloadV = ArchTag::kMinComputeCapability >= 80 &&
-                                    cutlass::sizeof_bits<scalar_t>::value == 16;
+  static constexpr bool kIsHalf = cutlass::sizeof_bits<scalar_t>::value == 16;
+  static constexpr bool kPreloadV =
+      ArchTag::kMinComputeCapability >= 80 && kIsHalf;
   static constexpr bool kKeepOutputInRF = kSingleValueIteration;
   static constexpr bool kNeedsOutputAccumulatorBuffer =
       !kKeepOutputInRF &&
@@ -125,13 +138,13 @@ struct AttentionKernel {
   // Launch bounds
   static constexpr int kNumThreads = kWarpSize * kNumWarpsPerBlock;
   static constexpr int kMinBlocksPerSm =
-      getWarpsPerSm<scalar_t, ArchTag>() / kNumWarpsPerBlock;
+      getWarpsPerSmFw<scalar_t, ArchTag>() / kNumWarpsPerBlock;
 
   struct Params {
     // Input tensors
-    scalar_t* query_ptr;                // [num_queries, num_heads, head_dim]
-    scalar_t* key_ptr;                  // [num_keys, num_heads, head_dim]
-    scalar_t* value_ptr;                // [num_keys, num_heads, head_dim_value]
+    scalar_t* query_ptr = nullptr;      // [num_queries, num_heads, head_dim]
+    scalar_t* key_ptr = nullptr;        // [num_keys, num_heads, head_dim]
+    scalar_t* value_ptr = nullptr;      // [num_keys, num_heads, head_dim_value]
     scalar_t* attn_bias_ptr = nullptr;  // [num_heads, num_queries, num_keys]
     int32_t* seqstart_q_ptr = nullptr;
     int32_t* seqstart_k_ptr = nullptr;
@@ -141,10 +154,11 @@ struct AttentionKernel {
     uint32_t causal_diagonal_offset = 0;
 
     // Output tensors
-    output_t* output_ptr;  // [num_queries, num_heads, head_dim_value]
-    output_accum_t*
-        output_accum_ptr;         // [num_queries, num_heads, head_dim_value]
-    lse_scalar_t* logsumexp_ptr;  // [num_heads, num_queries] - can be null
+    output_t* output_ptr = nullptr;  // [num_queries, num_heads, head_dim_value]
+    // [num_queries, num_heads, head_dim_value]
+    output_accum_t* output_accum_ptr = nullptr;
+    // [num_heads, num_queries] - can be null
+    lse_scalar_t* logsumexp_ptr = nullptr;
 
     // Scale
     accum_t scale;
@@ -154,8 +168,9 @@ struct AttentionKernel {
     int32_t head_dim_value;
     int32_t num_queries;
     int32_t num_keys;
+    int32_t num_keys_absolute;
 
-    bool causal;
+    uint8_t custom_mask_type = NoCustomMask;
 
     int32_t q_strideM;
     int32_t k_strideM;
@@ -169,12 +184,12 @@ struct AttentionKernel {
     int32_t q_strideH;
     int32_t k_strideH;
     int32_t v_strideH;
-    int32_t bias_strideH = 0;
+    int64_t bias_strideH = 0;
 
     int64_t q_strideB;
     int64_t k_strideB;
     int64_t v_strideB;
-    int32_t bias_strideB = 0;
+    int64_t bias_strideB = 0;
 
     int32_t num_batches;
     int32_t num_heads;
@@ -185,7 +200,6 @@ struct AttentionKernel {
     float dropout_prob;
     uint64_t seed;
     uint64_t offset;
-
     // Moves pointers to what we should process
     // Returns "false" if there is no work to do
     CUTLASS_DEVICE bool advance_to_block() {
@@ -265,12 +279,18 @@ struct AttentionKernel {
             batch_id * lse_dim * num_heads + head_id * lse_dim + query_start;
       }
 
+      // Custom masking
       if (causal_diagonal_ptr) {
         causal_diagonal_offset = causal_diagonal_ptr[batch_id];
       }
-
-      num_queries -= query_start;
-      if (causal) {
+      if (custom_mask_type == CausalFromBottomRight) {
+        causal_diagonal_offset += num_keys - num_queries;
+      }
+      // We use num_keys_absolute to index into the rng_state
+      // We need this index to match between forward and backwards
+      num_keys_absolute = num_keys;
+      if (custom_mask_type == CausalFromTopLeft ||
+          custom_mask_type == CausalFromBottomRight) {
         // the bottom row of the current block is query_start + kQueriesPerBlock
         // the last active key is then query_start + causal_diagonal_offset +
         // kQueriesPerBlock so num_keys is the min between actual num_keys and
@@ -279,20 +299,22 @@ struct AttentionKernel {
             int32_t(query_start + causal_diagonal_offset + kQueriesPerBlock),
             num_keys);
       }
+
+      num_queries -= query_start;
       num_batches = 0;  // no longer used after
 
       // If num_queries == 1, and there is only one key head we're wasting
       // 15/16th of tensor core compute In that case :
       //  - we only launch kernels for head_id % kQueriesPerBlock == 0
       //  - we iterate over heads instead of queries (strideM = strideH)
-      if (num_queries == 1 && k_strideH == 0) {
+      if (num_queries == 1 && k_strideH == 0 && v_strideH == 0) {
         if (head_id % kQueriesPerBlock != 0) return false;
         q_strideM = q_strideH;
         num_queries = num_heads;
         num_heads = 1;  // unused but here for intent
         // remove causal since n_query = 1
         // otherwise, offset would change with head !
-        causal = false;
+        custom_mask_type = NoCustomMask;
         o_strideM = head_dim_value;
       }
 
@@ -313,6 +335,7 @@ struct AttentionKernel {
       head_dim = warp_uniform(head_dim);
       head_dim_value = warp_uniform(head_dim_value);
       o_strideM = warp_uniform(o_strideM);
+      custom_mask_type = warp_uniform(custom_mask_type);
       return true;
     }
 
@@ -368,14 +391,19 @@ struct AttentionKernel {
         ThreadblockShape,                     // ThreadblockShape
         WarpShape,                            // WarpShape
         typename GemmType::InstructionShape,  // InstructionShape
-        DefaultConfig::kStages,      // Should use `DefaultConfig::kStages`, but
-                                     // that uses too much smem
+        ArchTag::kMinComputeCapability >= 80 && kIsHalf
+            ? 4
+            : DefaultConfig::kStages,
         typename GemmType::Operator  // Operator
         >::DefaultMma;
     using MmaCore = typename DefaultMma::MmaCore;
     using IteratorA = typename DefaultMma::IteratorA;
     using IteratorB = typename DefaultMma::IteratorB;
-    using Mma = typename DefaultMma::ThreadblockMma;
+    using DefaultThreadblockMma = typename DefaultMma::ThreadblockMma;
+    using Mma = typename cutlass::platform::conditional<
+        kSingleValueIteration,
+        typename MakeCustomMma<DefaultThreadblockMma, kMaxK>::Mma,
+        DefaultThreadblockMma>::type;
     using AccumLambdaIterator = typename DefaultMmaAccumLambdaIterator<
         typename Mma::Operator::IteratorC,
         accum_t,
@@ -448,14 +476,23 @@ struct AttentionKernel {
         typename GemmType::InstructionShape,
         typename DefaultConfig::EpilogueOutputOp,
         void,  // ThreadblockSwizzle - not used
-        DefaultConfig::kStages,
+        ArchTag::kMinComputeCapability >= 80 && kIsHalf
+            ? 4
+            : DefaultConfig::kStages,
         false,  // SplitKSerial
         typename GemmType::Operator>;
 
+    using WarpIteratorA = typename cutlass::gemm::threadblock::
+        DefaultWarpIteratorAFromSharedMemory<
+            typename DefaultGemm::Mma::Policy::Operator::Shape,  // WarpShape
+            typename DefaultGemm::Mma::Policy::Operator::InstructionShape,
+            typename DefaultGemm::Mma::Policy::Operator::IteratorA,
+            typename DefaultGemm::Mma::Policy>::WarpIterator;
     using DefaultMmaFromSmem =
         typename cutlass::gemm::threadblock::DefaultMmaFromSharedMemory<
             typename DefaultGemm::Mma,
-            typename MM0::AccumulatorSharedStorage,
+            MM0::AccumulatorSharedStorage::Shape::kN,  // kMaxK
+            WarpIteratorA,
             false>;  // kScaleOperandA
     using Mma = typename DefaultMmaFromSmem::Mma;
     using IteratorB = typename Mma::IteratorB;
@@ -473,10 +510,6 @@ struct AttentionKernel {
         typename cutlass::epilogue::threadblock::PredicatedTileIterator<
             typename DefaultEpilogue::OutputTileIterator::ThreadMap,
             output_accum_t>;
-
-    struct SharedStorageMM1 {
-      typename Mma::SharedStorage mm;
-    };
   };
 
   static constexpr int64_t kAlignmentQ = MM0::kAlignmentA;
@@ -488,6 +521,9 @@ struct AttentionKernel {
     cutlass::Array<accum_t, kQueriesPerBlock> m_prime;
     cutlass::Array<accum_t, kQueriesPerBlock> s_prime;
     cutlass::Array<accum_t, kQueriesPerBlock> mi;
+    cutlass::Array<accum_t, kQueriesPerBlock> out_rescale;
+    cutlass::Array<accum_t, kQueriesPerBlock * MM0::MmaCore::WarpCount::kN>
+        addition_storage;
   };
 
   struct SharedStorageEpilogueAtEnd : ScalingCoefs {
@@ -497,7 +533,7 @@ struct AttentionKernel {
         typename MM0::BiasLoader::SmemTile bias;
         typename MM0::AccumulatorSharedStorage si;
       };
-      typename MM1::SharedStorageMM1 mm1;
+      typename MM1::Mma::SharedStorage mm1;
     };
 
     union {
@@ -519,7 +555,7 @@ struct AttentionKernel {
         typename MM0::BiasLoader::SmemTile bias;
         typename MM0::AccumulatorSharedStorage si;
       };
-      typename MM1::SharedStorageMM1 mm1;
+      typename MM1::Mma::SharedStorage mm1;
       typename MM1::DefaultEpilogue::SharedStorage epilogue;
     };
 
@@ -545,43 +581,31 @@ struct AttentionKernel {
     CHECK_ALIGNED_PTR(p.value_ptr, kAlignmentV);
     if (kSupportsBias) {
       CHECK_ALIGNED_PTR(p.attn_bias_ptr, kAlignmentQ);
-      PADDLE_ENFORCE_EQ(p.bias_strideB % kAlignmentQ,
-                        0,
-                        paddle::platform::errors::InvalidArgument(
-                            "attn_bias is not correctly aligned"));
-      PADDLE_ENFORCE_EQ(p.bias_strideH % kAlignmentQ,
-                        0,
-                        paddle::platform::errors::InvalidArgument(
-                            "attn_bias is not correctly aligned"));
-      PADDLE_ENFORCE_EQ(p.bias_strideM % kAlignmentQ,
-                        0,
-                        paddle::platform::errors::InvalidArgument(
-                            "attn_bias is not correctly aligned"));
+      XFORMERS_CHECK(p.num_batches <= 1 || p.bias_strideB % kAlignmentQ == 0,
+                     "attn_bias is not correctly aligned (strideB)");
+      XFORMERS_CHECK(p.num_heads <= 1 || p.bias_strideH % kAlignmentQ == 0,
+                     "attn_bias is not correctly aligned (strideH)");
+      XFORMERS_CHECK(p.bias_strideM % kAlignmentQ == 0,
+                     "attn_bias is not correctly aligned");
     }
-    PADDLE_ENFORCE_EQ(p.q_strideM % kAlignmentQ,
-                      0,
-                      paddle::platform::errors::InvalidArgument(
-                          "query is not correctly aligned"));
-    PADDLE_ENFORCE_EQ(p.k_strideM % kAlignmentK,
-                      0,
-                      paddle::platform::errors::InvalidArgument(
-                          "key is not correctly aligned"));
-    PADDLE_ENFORCE_EQ(p.v_strideM % kAlignmentV,
-                      0,
-                      paddle::platform::errors::InvalidArgument(
-                          "value is not correctly aligned"));
-    PADDLE_ENFORCE_EQ(p.q_strideH % kAlignmentQ,
-                      0,
-                      paddle::platform::errors::InvalidArgument(
-                          "query is not correctly aligned"));
-    PADDLE_ENFORCE_EQ(p.k_strideH % kAlignmentK,
-                      0,
-                      paddle::platform::errors::InvalidArgument(
-                          "key is not correctly aligned"));
-    PADDLE_ENFORCE_EQ(p.v_strideH % kAlignmentV,
-                      0,
-                      paddle::platform::errors::InvalidArgument(
-                          "value is not correctly aligned"));
+    XFORMERS_CHECK(p.q_strideM % kAlignmentQ == 0,
+                   "query is not correctly aligned (strideM)");
+    XFORMERS_CHECK(p.k_strideM % kAlignmentK == 0,
+                   "key is not correctly aligned (strideM)");
+    XFORMERS_CHECK(p.v_strideM % kAlignmentV == 0,
+                   "value is not correctly aligned (strideM)");
+    XFORMERS_CHECK(p.num_heads <= 1 || p.q_strideH % kAlignmentQ == 0,
+                   "query is not correctly aligned (strideH)");
+    XFORMERS_CHECK(p.num_heads <= 1 || p.k_strideH % kAlignmentK == 0,
+                   "key is not correctly aligned (strideH)");
+    XFORMERS_CHECK(p.num_heads <= 1 || p.v_strideH % kAlignmentV == 0,
+                   "value is not correctly aligned (strideH)");
+    XFORMERS_CHECK(
+        p.causal_diagonal_ptr == nullptr || p.custom_mask_type != NoCustomMask,
+        "`causal_diagonal_ptr` is only useful when `custom_mask_type` is "
+        "causal");
+    XFORMERS_CHECK(p.custom_mask_type < NumCustomMaskTypes,
+                   "invalid value for `custom_mask_type`");
     return true;
   }
 
@@ -594,13 +618,14 @@ struct AttentionKernel {
     SharedStorage& shared_storage = *((SharedStorage*)smem_buffer);  // NOLINT
     auto& m_prime = shared_storage.m_prime;
     auto& s_prime = shared_storage.s_prime;
-    auto& si = shared_storage.after_mm0.si;
     auto& mi = shared_storage.mi;
+    auto& out_rescale = shared_storage.out_rescale;
     const uint32_t query_start = blockIdx.x * kQueriesPerBlock;
 
     static_assert(kQueriesPerBlock < kNumWarpsPerBlock * kWarpSize, "");
     if (thread_id() < kQueriesPerBlock) {
       s_prime[thread_id()] = accum_t(0);
+      out_rescale[thread_id()] = accum_t(1.0);
       m_prime[thread_id()] =
           -cutlass::platform::numeric_limits<accum_t>::infinity();
       mi[thread_id()] = -cutlass::platform::numeric_limits<accum_t>::infinity();
@@ -666,7 +691,7 @@ struct AttentionKernel {
             {problem_size_1_k, problem_size_1_n},
             thread_id(),
             cutlass::MatrixCoord{0, blockN * MM1::Mma::Shape::kN});
-        MM1::Mma::prologue(shared_storage.after_mm0.mm1.mm,
+        MM1::Mma::prologue(shared_storage.after_mm0.mm1,
                            iterator_V,
                            thread_id(),
                            problem_size_1_k);
@@ -710,7 +735,7 @@ struct AttentionKernel {
           thread_id(),
           tb_offset_B);
 
-      auto my_warp_id = warp_id();
+      auto my_warp_id = warp_uniform(warp_id());
       auto my_lane_id = lane_id();
 
       // Construct thread-scoped matrix multiply
@@ -764,7 +789,7 @@ struct AttentionKernel {
 
         // Pij += Bij, Pij is in register fragment and Bij is in shared memory
         auto lane_offset = MM0::AccumLambdaIterator::get_lane_offset(
-            lane_id(), warp_id(), iteratorC_tile_offset);
+            my_lane_id, my_warp_id, iteratorC_tile_offset);
         MM0::AccumLambdaIterator::iterateRows(
             lane_offset,
             [&](int accum_m) {},
@@ -783,12 +808,12 @@ struct AttentionKernel {
       // first masked element is x = y + offset -> query_start + offset There is
       // intersection (and we need to mask) if min(iter_key_start +
       // kKeysPerBlock, num_keys)) >= query_start + offset
-      if (p.causal &&
+      if (p.custom_mask_type &&
           cutlass::fast_min(iter_key_start + kKeysPerBlock, p.num_keys) >=
               (query_start + p.causal_diagonal_offset)) {
         auto query_start = blockIdx.x * kQueriesPerBlock;
         auto lane_offset = MM0::AccumLambdaIterator::get_lane_offset(
-            lane_id(), warp_id(), iteratorC_tile_offset);
+            my_lane_id, my_warp_id, iteratorC_tile_offset);
         int32_t last_col;
         MM0::AccumLambdaIterator::iterateRows(
             lane_offset,
@@ -807,31 +832,23 @@ struct AttentionKernel {
             },
             [&](int accum_m) {});
       }
-      DISPATCH_BOOL(
-          iter_key_start == 0, kIsFirst, ([&] {
-            DISPATCH_BOOL(
-                p.num_keys - iter_key_start >= kKeysPerBlock,
-                kFullColumns,
-                ([&] {
-                  // Update `mi` from accum stored in registers
-                  // Also does accum[i] <- exp(accum[i] - mi)
-                  iterative_softmax<typename MM0::Mma::Operator::IteratorC,
-                                    kFullColumns,
-                                    kIsFirst,
-                                    kKeepOutputInRF>(
-                      accum_o,
-                      accum,
-                      mi,
-                      m_prime,
-                      s_prime,
-                      lane_id(),
-                      thread_id(),
-                      warp_id(),
-                      p.num_keys - iter_key_start,
-                      iteratorC_tile_offset,
-                      kSupportsBias ? 1.0f : p.scale);
-                }));
-          }));
+      // Update `mi` from accum stored in registers
+      // Also does accum[i] <- exp(accum[i] - mi)
+      iterative_softmax<typename MM0::Mma::Operator::IteratorC>(
+          accum_o,
+          accum,
+          mi,
+          m_prime,
+          s_prime,
+          out_rescale,
+          shared_storage.addition_storage,
+          my_lane_id,
+          thread_id(),
+          my_warp_id,
+          p.num_keys - iter_key_start,
+          iter_key_start == 0,
+          iteratorC_tile_offset,
+          kSupportsBias ? 1.0f : p.scale);
 
       // Output results to shared-memory
       int warp_idx_mn_0 = my_warp_id % (MM0::Mma::Base::WarpCount::kM *
@@ -880,7 +897,7 @@ struct AttentionKernel {
         if (thread_i < problem_size_0_m && thread_start_j < problem_size_0_n) {
           curandStatePhilox4_32_10_t curand_state = curand_state_init;
           skipahead(static_cast<unsigned long long>(  // NOLINT
-                        (query_start + thread_i) * p.num_keys +
+                        (query_start + thread_i) * p.num_keys_absolute +
                         (iter_key_start + thread_start_j)),
                     &curand_state);
           const float dropout_scale = 1.0 / (1.0 - p.dropout_prob);
@@ -933,12 +950,15 @@ struct AttentionKernel {
             {problem_size_1_k, problem_size_1_n},
             thread_id(),
             cutlass::MatrixCoord{0, blockN * MM1::Mma::Shape::kN});
-        typename MM1::Mma mma_pv(shared_storage.after_mm0.mm1.mm,
-                                 shared_storage.after_mm0.si,
-                                 (int)thread_id(),        // NOLINT
-                                 (int)warp_id(),          // NOLINT
-                                 (int)lane_id(),          // NOLINT
-                                 (int)problem_size_1_k);  // NOLINT
+        typename MM1::Mma mma_pv(
+            // operand A: Pij_dropped in shared memory
+            shared_storage.after_mm0.si.accum_ref(),
+            // operand B: shared memory staging area for Vj, which is loaded
+            // from global memory
+            shared_storage.after_mm0.mm1.operand_B_ref(),
+            (int)thread_id(),  // NOLINT
+            (int)my_warp_id,   // NOLINT
+            (int)my_lane_id);  // NOLINT
         mma_pv.set_prologue_done(kPreloadV);
         if (!kKeepOutputInRF) {
           accum_o.clear();
@@ -1003,12 +1023,12 @@ struct AttentionKernel {
                                            decltype(createOutputAccumIter)>::
                               apply(
                                   createOutputIter, createOutputAccumIter, col);
-                      EpilogueOutputOp rescale(s_prime, m_prime);
+                      EpilogueOutputOp rescale(s_prime, out_rescale);
                       Epilogue epilogue(
                           shared_storage.epilogue_shared_storage(),
                           thread_id(),
-                          warp_id(),
-                          lane_id());
+                          my_warp_id,
+                          my_lane_id);
                       epilogue(rescale, dest_iter, accum_o, source_iter);
                     }));
               }));
@@ -1052,7 +1072,7 @@ struct AttentionKernel {
               typename MM1::OutputTileIteratorAccum  // source tile
               >;
       auto dest_iter = createOutputIter(0);
-      EpilogueOutputOp rescale(s_prime, m_prime);
+      EpilogueOutputOp rescale(s_prime, out_rescale);
       Epilogue epilogue(shared_storage.epilogue_shared_storage(),
                         thread_id(),
                         warp_id(),
@@ -1066,9 +1086,10 @@ struct AttentionKernel {
     static_assert(kQueriesPerBlock < kNumWarpsPerBlock * kWarpSize, "");
     if (p.logsumexp_ptr && thread_id() < kQueriesPerBlock) {
       auto lse_dim = ceil_div((int32_t)p.num_queries, kAlignLSE) * kAlignLSE;
+      constexpr float kLog2e = 1.4426950408889634074;  // log_2(e) = M_LOG2E
       if (thread_id() < p.num_queries) {
         p.logsumexp_ptr[thread_id()] =
-            accum_t(mi[thread_id()]) +
+            accum_t(mi[thread_id()] / kLog2e) +
             cutlass::fast_log(accum_t(s_prime[thread_id()]));
       } else if (thread_id() < lse_dim) {
         p.logsumexp_ptr[thread_id()] =
@@ -1077,20 +1098,21 @@ struct AttentionKernel {
     }
   }
 
-  template <typename WarpIteratorC,
-            bool kFullColumns,
-            bool kIsFirst,
-            bool kKeepOutputInRF>
+  template <typename WarpIteratorC>
   CUTLASS_DEVICE static void iterative_softmax(
-      typename WarpIteratorC::Fragment& frag_o,  // output so far   //NOLINT
-      typename WarpIteratorC::Fragment& frag,    // NOLINT
-      cutlass::Array<accum_t, kQueriesPerBlock>& mi,       // NOLINT
-      cutlass::Array<accum_t, kQueriesPerBlock>& m_prime,  // NOLINT
-      cutlass::Array<accum_t, kQueriesPerBlock>& s_prime,  // NOLINT
+      typename WarpIteratorC::Fragment& frag_o,       // output so far // NOLINT
+      typename WarpIteratorC::Fragment& frag,         // NOLINT
+      cutlass::Array<accum_t, kQueriesPerBlock>& mi,  // NOLINT
+      cutlass::Array<accum_t, kQueriesPerBlock>& m_prime,      // NOLINT
+      cutlass::Array<accum_t, kQueriesPerBlock>& s_prime,      // NOLINT
+      cutlass::Array<accum_t, kQueriesPerBlock>& out_rescale,  // NOLINT
+      cutlass::Array<accum_t, kQueriesPerBlock * MM0::MmaCore::WarpCount::kN>&
+          addition_storage,
       int8_t lane_id,
       int8_t thread_id,
       int8_t warp_id,
-      int16_t max_col,
+      int max_col,
+      bool is_first,
       typename WarpIteratorC::TensorCoord const& tile_offset,
       float scaling) {
     /* Iterates on the accumulator and corresponding position on result matrix
@@ -1111,12 +1133,11 @@ struct AttentionKernel {
                                                kWarpSize>::Iterator;
     // Convert to `accum_t` (rather than double)
     constexpr float kLog2e = 1.4426950408889634074;  // log_2(e) = M_LOG2E
-    if (!kIsFirst) {
-      if (thread_id < kQueriesPerBlock) {
-        m_prime[thread_id] = mi[thread_id];
-      }
-      __syncthreads();
-    }
+
+    static_assert(kQueriesPerBlock % kNumWarpsPerBlock == 0, "");
+    static constexpr int kLinesPerWarp = kQueriesPerBlock / kNumWarpsPerBlock;
+
+    frag = cutlass::multiplies<Fragment>()(scaling * kLog2e, frag);
 
     auto lane_offset =
         LambdaIterator::get_lane_offset(lane_id, warp_id, tile_offset);
@@ -1130,46 +1151,64 @@ struct AttentionKernel {
             max = -cutlass::platform::numeric_limits<accum_t>::infinity();
           },
           [&](int accum_m, int accum_n, int idx) {
-            if (kFullColumns || accum_n < max_col) {
+            if (accum_n < max_col) {
               max = cutlass::fast_max(max, frag[idx]);
             }
           },
           [&](int accum_m) {
             // Having 4x atomicMax seems faster than reduce within warp
             // first...
-            atomicMaxFloat(&mi[accum_m], max * scaling);
+            atomicMaxFloat(&mi[accum_m], max);
           });
     }
-    frag = cutlass::multiplies<Fragment>()(scaling * kLog2e, frag);
 
     // Make sure we all share the update values for `mi`
     __syncthreads();
 
-    if (thread_id < kQueriesPerBlock) {
-      auto m_prime_exp = exp2f(kLog2e * (m_prime[thread_id] - mi[thread_id]));
-      m_prime[thread_id] = m_prime_exp;
-      s_prime[thread_id] *= m_prime_exp;
+    // Doing this `exp` is quite expensive. Let's
+    // split it across the warps
+    bool restore_mi_to_minus_inf = false;
+    if (lane_id < kLinesPerWarp) {
+      int id = warp_id * kLinesPerWarp + lane_id;
+      auto m_prime_id = m_prime[id];
+      auto mi_id = mi[id];
+      bool changed = m_prime_id < mi_id;  // `false` if both are -inf
+      if (changed) {
+        auto m_prime_exp = exp2f(m_prime_id - mi_id);
+        out_rescale[id] = m_prime_exp;
+        s_prime[id] *= m_prime_exp;
+      } else {
+        // Only when bias is enabled, it's possible that all the first values
+        // of attention are masked to `-inf`. In that case we want to avoid
+        // `nan = exp2f(-inf - (-inf))` so we temporarily set `mi` to 0
+        if (kSupportsBias &&
+            mi_id == -cutlass::platform::numeric_limits<accum_t>::infinity()) {
+          restore_mi_to_minus_inf = true;
+          mi[id] = 0.0f;
+        }
+        out_rescale[id] = 1.0f;
+      }
     }
     __syncthreads();  // Update output fragments
-    if (kKeepOutputInRF && !kIsFirst) {
-      accum_t mp;
+    if (kKeepOutputInRF && !is_first) {
+      accum_t line_rescale;
       LambdaIterator::iterateRows(
           lane_offset,
-          [&](int accum_m) { mp = m_prime[accum_m]; },
-          [&](int accum_m, int accum_n, int idx) { frag_o[idx] *= mp; },
+          [&](int accum_m) { line_rescale = out_rescale[accum_m]; },
+          [&](int accum_m, int accum_n, int idx) {
+            frag_o[idx] = frag_o[idx] * line_rescale;
+          },
           [&](int accum_m) {});
-      __syncthreads();
     }
     // Update accum_m, accum_n, ...
     {
       accum_t mi_row, total_row;
       LambdaIterator::iterateRows(
           lane_offset,
-          [&](int accum_m) { mi_row = kLog2e * mi[accum_m]; },
+          [&](int accum_m) { mi_row = mi[accum_m]; },
           [&](int accum_m, int accum_n, int idx) {
-            frag[idx] = (kFullColumns || accum_n < max_col)
-                            ? exp2f(frag[idx] - mi_row)
-                            : accum_t(0.0);
+            frag[idx] =
+                (accum_n < max_col) ? exp2f(frag[idx] - mi_row) : accum_t(0.0);
           },
           [&](int accum_m) {});
       LambdaIterator::iterateRows(
@@ -1181,9 +1220,28 @@ struct AttentionKernel {
                     lane_id, total_row, [](accum_t a, accum_t b) {
                       return a + b;
                     })) {
-              atomicAdd(&s_prime[accum_m], total_row);
+              // NOTE: we could atomically add `total_row` to `s_prime`, but
+              // it's faster (and deterministic) to avoid atomics here
+              addition_storage[accum_m + kQueriesPerBlock *
+                                             tile_offset.column()] = total_row;
             }
           });
+    }
+    __syncthreads();
+    if (lane_id < kLinesPerWarp) {
+      int id = warp_id * kLinesPerWarp + lane_id;
+      accum_t total_row = s_prime[id];
+      if (restore_mi_to_minus_inf) {
+        // Restore `mi`, see above when we set `restore_mi_to_minus_inf=true`
+        mi[id] = -cutlass::platform::numeric_limits<accum_t>::infinity();
+      } else {
+        m_prime[id] = mi[id];
+      }
+      CUTLASS_PRAGMA_UNROLL
+      for (int i = 0; i < MM0::MmaCore::WarpCount::kN; ++i) {
+        total_row += addition_storage[id + kQueriesPerBlock * i];
+      }
+      s_prime[id] = total_row;
     }
   }
 
@@ -1206,5 +1264,3 @@ __global__ void __launch_bounds__(AK::kNumThreads, AK::kMinBlocksPerSm)
 template <typename AK>
 __global__ void __launch_bounds__(AK::kNumThreads, AK::kMinBlocksPerSm)
     attention_kernel_batched(typename AK::Params params);
-
-// } // namespace phi
