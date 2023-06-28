@@ -162,7 +162,7 @@ void MemoryEfficientAttentionForwardKernel(
     PD_MEA_CHECK_OVERFLOW(
         p.num_batches,
         cu_seqlens_q ? cu_seqlens_q.get().dims()[0] - 1 : q_dims[0]);
-    p.causal = causal;
+    p.custom_mask_type = causal ? 1 : 0;
     if (causal_diagonal) {
       p.causal_diagonal_ptr = SafeGetTensorPtr<int32_t>(causal_diagonal);
     } else {

@@ -53,6 +53,7 @@
 #include "./gemm_kernel_utils.h"
 #include "epilogue/epilogue_pipelined.h"
 #include "epilogue/epilogue_rescale_output.h"
+#include "gemm/custom_mma.h"
 #include "gemm/find_default_mma.h"
 #include "gemm/mma_from_smem.h"
 #include "transform/tile_smem_loader.h"
