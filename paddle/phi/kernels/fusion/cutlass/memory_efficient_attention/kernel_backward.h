@@ -1303,7 +1303,6 @@ struct AttentionBackwardKernel {
 
     curandStatePhilox4_32_10_t rng_state_init;
     if (kApplyDropout) {
-      auto seeds = at::cuda::philox::unpack(p.rng_engine_inputs);
       // each element of the attention matrix P with shape
       // (batch_sz, n_heads, n_queries, n_keys) is associated with a single
       // offset in RNG sequence. we initialize the RNG state with offset that
