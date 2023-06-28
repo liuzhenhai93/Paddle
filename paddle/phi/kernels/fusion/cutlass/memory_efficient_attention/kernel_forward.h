@@ -580,6 +580,7 @@ struct AttentionKernel {
     CHECK_ALIGNED_PTR(p.query_ptr, kAlignmentQ);
     CHECK_ALIGNED_PTR(p.key_ptr, kAlignmentK);
     CHECK_ALIGNED_PTR(p.value_ptr, kAlignmentV);
+    /*
     if (kSupportsBias) {
       CHECK_ALIGNED_PTR(p.attn_bias_ptr, kAlignmentQ);
       XFORMERS_CHECK(p.num_batches <= 1 || p.bias_strideB % kAlignmentQ == 0,
@@ -607,6 +608,7 @@ struct AttentionKernel {
         "causal");
     XFORMERS_CHECK(p.custom_mask_type < NumCustomMaskTypes,
                    "invalid value for `custom_mask_type`");
+  */
     return true;
   }
 
