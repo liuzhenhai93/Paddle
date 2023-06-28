@@ -681,10 +681,9 @@ struct AttentionBackwardKernel {
     int32_t gB_strideM = -1;
     int8_t gQKV_strideM_multiplier = 1;  // 3 for packed, 1 otherwise
 
-#ifdef HAS_PYTORCH
-    // dropout
-    at::PhiloxCudaState rng_engine_inputs = {0, 0};
-#endif
+    uint64_t seed;
+    uint64_t offset;
+
     // RNG sequence offset based on batch_id and head_id
     unsigned long long dropout_batch_head_rng_offset = 0;  // NOLINT
     float dropout_prob = 0.0f;
@@ -1303,7 +1302,6 @@ struct AttentionBackwardKernel {
     OutputFragments output_frags;
 
     curandStatePhilox4_32_10_t rng_state_init;
-#ifdef HAS_PYTORCH
     if (kApplyDropout) {
       auto seeds = at::cuda::philox::unpack(p.rng_engine_inputs);
       // each element of the attention matrix P with shape
@@ -1314,12 +1312,11 @@ struct AttentionBackwardKernel {
       // initializing rng state is very expensive, so we run once per kernel,
       // rather than once per iteration. each iteration takes a copy of the
       // initialized RNG state and offsets it as needed.
-      curand_init(std::get<0>(seeds),
+      curand_init(p.seed,
                   0,
-                  std::get<1>(seeds) + p.dropout_batch_head_rng_offset,
+                  p.offset + p.dropout_batch_head_rng_offset,
                   &rng_state_init);
     }
-#endif
     CUTLASS_PRAGMA_UNROLL
     for (; key_start < p.num_keys;
          key_start += p.num_splits_key_device() * kBlockSizeJ) {
