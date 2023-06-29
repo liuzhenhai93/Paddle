@@ -418,6 +418,7 @@ void MemoryEfficientAttentionBackwardKernel(
         cu_seqlens_q ? cu_seqlens_q.get().dims()[0] - 1 : q_dims[0]);
     PD_MEA_CHECK_OVERFLOW(p.num_heads, q_dims[2]);
     p.custom_mask_type = causal ? 1 : 0;
+    p.num_splits_key = 1;
 
     if (scale < 0) {
       p.scale = static_cast<float>(1.0 / std::sqrt(p.head_dim));
