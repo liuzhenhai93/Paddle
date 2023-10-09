@@ -1123,6 +1123,28 @@ PADDLE_DEFINE_EXPORTED_bool(nccl_blocking_wait, false, "nccl blocking wait");
 #endif
 
 /**
+ * ProcessGroupNCCL related FLAG
+ * Name: enable_async_trace
+ * Since Version:
+ * Value Range: bool, default=false
+ * Example:
+ * Note: enable nccl async trace.
+ */
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+PADDLE_DEFINE_EXPORTED_bool(enable_async_trace,
+                            false,
+                            "enable collective async trace");
+
+PADDLE_DEFINE_EXPORTED_int32(async_trace_count,
+                             5,
+                             "collective async trace count");
+
+PADDLE_DEFINE_EXPORTED_bool(benchmark_nccl,
+                            false,
+                            "enable nccl debug mode to synchronize nccl comm");
+#endif
+
+/**
  * Autotune related FLAG
  * Name: FLAGS_use_autotune
  * Since Version: 2.3.0
@@ -1247,3 +1269,17 @@ PADDLE_DEFINE_EXPORTED_bool(use_shm_cache,
 PADDLE_DEFINE_EXPORTED_string(tensor_operants_mode,
                               "eager",
                               "Tensor operants mode");
+
+PADDLE_DEFINE_EXPORTED_bool(
+    use_auto_growth_pinned_allocator,
+    false,
+    "Whether to use the auto_growth CUDA pinned allocator.");
+
+PADDLE_DEFINE_EXPORTED_bool(
+    sync_after_alloc,
+    false,
+    "Whether to perform device synchronization after allocation.");
+PADDLE_DEFINE_EXPORTED_int64(alloc_fill_value,
+                             -1,
+                             "Whether to fill fixed value after allocation. "
+                             "This is usefull for debugging.");

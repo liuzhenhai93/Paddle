@@ -14,13 +14,25 @@
 
 ######
 
+import os
+from collections import defaultdict
+from distutils.util import strtobool
 from functools import reduce
 
 import paddle
 from paddle import framework
 from paddle.fluid.dygraph import base as imperative_base
+from paddle.nn import ClipGradByGlobalNorm
 
 from ...utils.log_util import logger
+
+g_shard_use_reduce = int(os.environ.get("FLAGS_shard_use_reduce", 1))
+g_shard_norm_align_dp = int(os.environ.get("FLAGS_shard_norm_align_dp", 0))
+
+if g_shard_norm_align_dp:
+    assert (
+        not g_shard_use_reduce
+    ), "g_shard_norm_align_dp is not support if g_shard_use_reduce is true"
 
 
 def _is_trainable(param):
@@ -45,11 +57,6 @@ class DygraphShardingOptimizer:
     # 4. option to choose fuse comm (more GPU MEM need) or un-fuse comm
 
     def __init__(self, optimizer, hcg):
-        # TODO(pangengzheng): support param_groups
-        if isinstance(optimizer._parameter_list[0], dict):
-            raise TypeError(
-                "Do not support param_groups now, please set optimizer._parameter_list as a list of Parameter"
-            )
         if not hasattr(optimizer, '_apply_optimize') or not callable(
             optimizer._apply_optimize
         ):
@@ -57,8 +64,20 @@ class DygraphShardingOptimizer:
                 "the optimzier object should have _apply_optimize function"
             )
 
-        # the self._parameter_list holds the whole model paramters
-        self._parameter_list = optimizer._parameter_list
+        self._using_param_groups = isinstance(
+            optimizer._parameter_list[0], dict
+        )
+
+        self._parameter_list = []
+        self._param_2_group_id = {}
+        if self._using_param_groups:
+            for idx, param_group in enumerate(optimizer._param_groups):
+                for param in param_group['params']:
+                    self._param_2_group_id[id(param)] = idx
+                    self._parameter_list.append(param)
+        else:
+            self._parameter_list = optimizer._parameter_list
+
         self._inner_opt = optimizer
         self._hcg = hcg
         self._sharding_world_size = self._hcg.get_sharding_parallel_world_size()
@@ -67,18 +86,35 @@ class DygraphShardingOptimizer:
         self._rank2params = self._partition_parameters()
         self._param2rank = self._map_param_to_rank()
 
-        self._set_inner_opt_attr(
-            '_parameter_list', self._rank2params[self._sharding_rank]
-        )
-        self._set_inner_opt_attr(
-            '_param_groups', self._rank2params[self._sharding_rank]
-        )
+        if self._using_param_groups:
+            param_groups = [
+                {"params": []} for _ in range(len(optimizer._param_groups))
+            ]
+            for idx, pg in enumerate(optimizer._param_groups):
+                param_groups[idx].update(
+                    {k: v for k, v in pg.items() if k != 'params'}
+                )
+            for param in self._rank2params[self._sharding_rank]:
+                group_id = self._param_2_group_id[id(param)]
+                param_groups[group_id]['params'].append(param)
+
+            self._set_inner_opt_attr('_param_groups', param_groups)
+            self._set_inner_opt_attr(
+                '_parameter_list', self._rank2params[self._sharding_rank]
+            )
+            self._param_groups = self._parameter_list
+        else:
+            self._set_inner_opt_attr(
+                '_param_groups', self._rank2params[self._sharding_rank]
+            )
+            self._set_inner_opt_attr(
+                '_parameter_list', self._rank2params[self._sharding_rank]
+            )
 
     def clear_grad(self, set_to_zero=True):
         """
         should clear grad for all parameters in model
         """
-        #
         for p in self._parameter_list:
             if hasattr(p, "main_grad") and p.main_grad is not None:
                 assert p._grad_ivar() is None
@@ -89,6 +125,15 @@ class DygraphShardingOptimizer:
                     p.main_grad = None
             elif not hasattr(p, "main_grad"):
                 p.clear_gradient(set_to_zero)
+
+    def filter_parameters(self, parameter_list, hcg):
+        sharding_parallel_rank = hcg.get_sharding_parallel_rank()
+        parameter_list = [
+            param
+            for param in parameter_list
+            if self._param2rank[param.name] == sharding_parallel_rank
+        ]
+        return parameter_list
 
     def _partition_parameters(self):
         """
@@ -105,7 +150,17 @@ class DygraphShardingOptimizer:
         for rank_ in range(self._sharding_world_size):
             mapping[rank_] = []
         sizes = [0] * self._sharding_world_size
-        for param in self._parameter_list:
+
+        parameters = list(self._parameter_list)
+        need_sort_parameters = strtobool(
+            os.getenv('FLAGS_sharding_sort_parameters', '1')
+        )
+        if need_sort_parameters:
+            parameters.sort(
+                key=lambda p: reduce(lambda x, y: x * y, p.shape), reverse=True
+            )
+
+        for param in parameters:
             rank = sizes.index(min(sizes))
             mapping[rank].append(param)
             numel = reduce(lambda x, y: x * y, param.shape)
@@ -148,18 +203,22 @@ class DygraphShardingOptimizer:
                 if g_var is not None:
                     g_var.scale_(1.0 / sharding_nrank)
                     param_rank = self._param2rank[param.name]
-                    paddle.distributed.all_reduce(
-                        g_var,
-                        group=hcg.get_sharding_parallel_group(),
-                        sync_op=True,
-                    )
-                    # TODO(pangengzheng): change to reduce operation when there is no diff in calculating global norm values in HybridParallelClipGrad compared to dp.
-                    # paddle.distributed.reduce(
-                    #     g_var,
-                    #     dst=hcg.get_sharding_parallel_group().ranks[param_rank],
-                    #     group=hcg.get_sharding_parallel_group(),
-                    #     sync_op=True,
-                    # )
+                    if not g_shard_use_reduce:
+                        paddle.distributed.all_reduce(
+                            g_var,
+                            group=hcg.get_sharding_parallel_group(),
+                            sync_op=True,
+                        )
+                    else:
+                        # TODO(pangengzheng): change to reduce operation when there is no diff in calculating global norm values in HybridParallelClipGrad compared to dp.
+                        paddle.distributed.reduce(
+                            g_var,
+                            dst=hcg.get_sharding_parallel_group().ranks[
+                                param_rank
+                            ],
+                            group=hcg.get_sharding_parallel_group(),
+                            sync_op=True,
+                        )
 
     def _sharding_sync_parameters(self):
         """
@@ -192,6 +251,9 @@ class DygraphShardingOptimizer:
         # NOTE in dygraph mode, the only different between step and minimize is that minimize
         # allow user to customize the parameters for updating on each step
 
+        assert (
+            not self._using_param_groups
+        ), "minimize() is not support if using param_groups"
         input_param_names = {param.name for param in parameters}
         parameters = list(
             filter(
@@ -217,7 +279,7 @@ class DygraphShardingOptimizer:
         # otherwise the self._inner_opt will only grad_clip the self._rank2params[self._sharding_rank] params
         # TODO(pangengzheng): remove the hacked grad_clip codes here when there is no diff in calculating global norm values in HybridParallelClipGrad compared to dp.
         origin_clip = self._inner_opt._grad_clip
-        if not isinstance(self._parameter_list[0], dict):
+        if not self._using_param_groups:
             params_grads = []
             for param in self._parameter_list:
                 if (
@@ -235,11 +297,10 @@ class DygraphShardingOptimizer:
                 if hasattr(param, "main_grad") and param.main_grad is not None:
                     grad_var = param.main_grad
                 params_grads.append((param, grad_var))
-            if hasattr(self._inner_opt._grad_clip, 'not_sharding_stage1'):
-                self._inner_opt._grad_clip.not_sharding_stage1 = False
-            params_grads = self._inner_opt._grad_clip(params_grads)
-            # set inner_opt._grad_clip None to avoid repeatedly grad_clip gradients inside inner_opt._apply_optimize
-            self._set_inner_opt_attr('_grad_clip', None)
+            if g_shard_norm_align_dp:
+                params_grads = self._inner_opt._grad_clip(params_grads)
+                # set inner_opt._grad_clip None to avoid repeatedly grad_clip gradients inside inner_opt._apply_optimize
+                self._set_inner_opt_attr('_grad_clip', None)
             update_param_names = [
                 p.name for p in self._rank2params[self._sharding_rank]
             ]
@@ -251,8 +312,38 @@ class DygraphShardingOptimizer:
                 startup_program=None,
                 params_grads=update_params_grads,
             )
-            # restore the grad clip
-            self._set_inner_opt_attr('_grad_clip', origin_clip)
+            if g_shard_norm_align_dp:
+                # restore the grad clip
+                self._set_inner_opt_attr('_grad_clip', origin_clip)
+        else:
+            # optimize parameters in groups
+            for param_group in self._inner_opt._param_groups:
+                params_grads = defaultdict(lambda: [])
+
+                # TODO(shenliang03): support ClipGradByGlobalNorm in sharding when using param_groups
+                grad_clip = param_group['grad_clip']
+                assert not isinstance(
+                    grad_clip, ClipGradByGlobalNorm
+                ), "ClipGradByGlobalNorm is not support if using param_groups in sharding"
+
+                for param in param_group['params']:
+                    if param.stop_gradient:
+                        continue
+
+                    grad_var = param._grad_ivar()
+                    if (
+                        hasattr(param, "main_grad")
+                        and param.main_grad is not None
+                    ):
+                        grad_var = param.main_grad
+
+                    params_grads['params'].append((param, grad_var))
+                params_grads.update(
+                    {k: v for k, v in param_group.items() if k != 'params'}
+                )
+                self._apply_optimize(
+                    loss=None, startup_program=None, params_grads=params_grads
+                )
 
         # sync parameters across sharding ranks
         self._sharding_sync_parameters()
