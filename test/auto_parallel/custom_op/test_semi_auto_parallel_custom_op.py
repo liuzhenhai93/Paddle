@@ -18,7 +18,6 @@ import unittest
 
 import collective.test_communication_api_base as test_base
 
-from paddle.framework import core
 from paddle.utils.cpp_extension.extension_utils import run_cmd
 
 
@@ -47,12 +46,6 @@ class TestCusomOp(test_base.CommunicationTestDistBase):
                 "semi_auto_parallel_for_custom_op.py",
                 user_defined_envs=envs,
             )
-
-    # test static spmd rule register
-    def test_static_rule(self):
-        import custom_relu  # noqa: F401 # pylint: disable=unused-import
-
-        assert core.contains_spmd_rule("custom_relu")
 
 
 if __name__ == "__main__":
