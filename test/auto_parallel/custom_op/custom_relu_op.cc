@@ -118,6 +118,17 @@ PD_BUILD_GRAD_OP(custom_relu)
     .SetKernelFn(PD_KERNEL(ReluBackward))
     .SetInferSpmdFn(PD_INFER_SPMD_RULE(ReluGradInferSpmd));
 
+
+PD_BUILD_OP(custom_relu_no_spmd)
+    .Inputs({"X"})
+    .Outputs({"Out"})
+    .SetKernelFn(PD_KERNEL(ReluForward));
+
+PD_BUILD_GRAD_OP(custom_relu_no_spmd)
+    .Inputs({"X", "Out", paddle::Grad("Out")})
+    .Outputs({paddle::Grad("X")})
+    .SetKernelFn(PD_KERNEL(ReluBackward));
+
 PD_REGISTER_SPMD_RULE(
     custom_relu,
     PD_INFER_SPMD(phi::distributed::ElementwiseUnaryInferSpmd),

@@ -733,7 +733,8 @@ void TransCtxTensorsToDistTensors(
         dist_attr = PADDLE_GET_CONST(phi::distributed::TensorDistAttr,
                                      spmd_info.second[i]);
       } else {
-        phi::distributed::TensorDistAttr(common::vectorize(tensor.dims()));
+        std::vector<int64_t> shape = common::vectorize(output_dims[i]);
+        dist_attr.set_default_dims_mapping(shape);
         dist_attr.set_process_mesh(current_process_mesh);
       }
       auto dist_t = std::make_shared<phi::distributed::DistTensor>(

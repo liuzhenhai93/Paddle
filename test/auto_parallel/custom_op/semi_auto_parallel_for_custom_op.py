@@ -51,6 +51,17 @@ class TestCusomOpSemiAutoParallel(SemiAutoParallelTestBase):
         )
         self.check_placements(outputs, [dist.Shard(0)])
 
+    def test_custom_relu_no_spmd(self):
+        shapes = [16, 4, 4]
+        specs = ['x', None, None]
+        inputs, outputs = self.runfunc_and_check(
+            inputs_shape=shapes,
+            inputs_specs=specs,
+            op_func=custom_relu.custom_relu_no_spmd,
+            with_backward=True,
+        )
+        self.check_placements(outputs, [dist.Replicate()])    
+
     def test_custom_relu_no_shard(self):
         shapes = [16, 4, 4]
         specs = [None, None, None]
@@ -71,6 +82,7 @@ class TestCusomOpSemiAutoParallel(SemiAutoParallelTestBase):
             raise ValueError("Only support cpu or gpu backend.")
         self.test_custom_relu_no_shard()
         self.test_custom_relu()
+        self.test_custom_relu_no_spmd()
 
 
 if __name__ == '__main__':
