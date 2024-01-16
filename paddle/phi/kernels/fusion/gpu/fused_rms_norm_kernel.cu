@@ -588,7 +588,7 @@ __device__ void cuLoadAddStridedInputs(const int i1_block,
   }
 }
 
-template <typename T, typename U, typename V>
+template <typename T, typename U>
 __global__ void cuComputePartGradGammaBeta(const T* __restrict__ dout,
                                            const T* __restrict__ input,
                                            const int n1,
@@ -777,7 +777,7 @@ __global__ void cuComputeGradInput(const T* __restrict__ dout,
     }
     const U c_invvar = invvar[i1];
     const T* k_input = input + i1 * n2;
-    const V* k_dout = dout + i1 * n2;
+    const T* k_dout = dout + i1 * n2;
     const int numx = blockDim.x * blockDim.y;
     const int thrx = threadIdx.x + threadIdx.y * blockDim.x;
     if (gamma != NULL) {
@@ -997,10 +997,10 @@ void HostRMSNormGradient(const Context& dev_ctx,
         2 * sizeof(U) * threads2.y * threads2.y * (threads2.x + 1);
     const int nshared2_b = threads2.x * threads2.y * sizeof(U);
     const int nshared2 = nshared2_a > nshared2_b ? nshared2_a : nshared2_b;
-    auto place =  dev_ctx.GetPlace();
     std::vector<int64_t> shape = {part_size, n2};
-    DenseTensor part_grad_gamma(&dev_ctx.GetAllocator(),
+    DenseTensor part_grad_gamma(std::shared_ptr<phi::Allocation>(nullptr),
                                 phi::DenseTensorMeta(phi::DataType::FLOAT32,common::make_ddim({shape})));
+    dev_ctx.template Alloc<float>(&part_grad_gamma);                            
     
     cuComputePartGradGammaBeta<<<blocks2, threads2, nshared2, stream>>>(
         dout,
@@ -1033,6 +1033,9 @@ void HostRMSNormGradient(const Context& dev_ctx,
   const dim3 blocks1(1, std::min((uint64_t)n1, maxGridY), 1);
   const dim3 threads1(32, 4, 1);
   int nshared = threads1.y > 1 ? threads1.y * threads1.x * sizeof(U) : 0;
+  
+
+  const V* gamma_tmp = gamma;
   cuComputeGradInput<<<blocks1, threads1, nshared, stream>>>(
       dout,
       input.data<T>(),
@@ -1041,7 +1044,7 @@ void HostRMSNormGradient(const Context& dev_ctx,
       invvar, /* unused */
       invvar,
       U(epsilon),
-      gamma,
+      gamma_tmp,
       grad_input,
       true);
 }
@@ -1128,6 +1131,14 @@ PD_REGISTER_KERNEL(fused_rms_norm,
   }
 }
 
+PD_REGISTER_KERNEL(fused_rms_norm_grad,
+                   GPU,
+                   ALL_LAYOUT,
+                   phi::fusion::FusedRmsNormGradKernel,
+                   float,
+                   phi::dtype::float16) {
+}
+
 #elif CUDNN_VERSION_MIN(8, 1, 0)
 PD_REGISTER_KERNEL(fused_rms_norm,
                    GPU,
@@ -1140,6 +1151,18 @@ PD_REGISTER_KERNEL(fused_rms_norm,
     kernel->OutputAt(1).SetDataType(phi::DataType::FLOAT32);
   }
 }
+
+
+PD_REGISTER_KERNEL(fused_rms_norm_grad,
+                   GPU,
+                   ALL_LAYOUT,
+                   phi::fusion::FusedRmsNormGradKernel,
+                   float,
+                   phi::dtype::float16,
+                   phi::dtype::bfloat16) {
+}
+
+
 #else
 PD_REGISTER_KERNEL(fused_rms_norm,
                    GPU,
@@ -1150,5 +1173,14 @@ PD_REGISTER_KERNEL(fused_rms_norm,
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->OutputAt(1).SetDataType(phi::DataType::FLOAT32);
   }
+}
+
+
+PD_REGISTER_KERNEL(fused_rms_norm_grad,
+                   GPU,
+                   ALL_LAYOUT,
+                   phi::fusion::FusedRmsNormGradKernel,
+                   float,
+                   phi::dtype::float16) {
 }
 #endif
