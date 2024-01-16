@@ -58,7 +58,7 @@ namespace fusion {
     break
 
 #define DISPATCH_SCALE_TYPE(INPUT_TYPE, SCALE_DTYPE, NAME, ...)          \
-  auto input_dtype = phi::CppTypeToDataType<INPUT_TYPE>::Type();         \
+ do{ auto input_dtype = phi::CppTypeToDataType<INPUT_TYPE>::Type();         \
   bool is_scale_same_dtype_with_x = input_dtype == SCALE_DTYPE;          \
   using U = typename phi::backends::gpu::CudnnDataType<                  \
       INPUT_TYPE>::BatchNormParamType;                                   \
@@ -85,7 +85,7 @@ namespace fusion {
       break;                                                             \
     }                                                                    \
       DEFAULT_THROW(NAME, TYPEOUT);                                      \
-  }
+  } }while(0)
 
 #define WARP_SIZE 32
 
@@ -493,7 +493,7 @@ __global__ void cuApplyRMSNorm(T* __restrict__ output_vals,
       output_vals, NULL, invvar, vals, n1, n2, epsilon, gamma, NULL, true);
 }
 
-template <typename T, typename U, typename V>
+template <typename T, typename U>
 __device__ void cuLoadWriteStridedInputs(const int i1_block,
                                          const int thr_load_row_off,
                                          const int thr_load_col_off,
@@ -502,7 +502,7 @@ __device__ void cuLoadWriteStridedInputs(const int i1_block,
                                          U* warp_buf1,
                                          U* warp_buf2,
                                          const T* input,
-                                         const V* dout,
+                                         const T* dout,
                                          const int i1_end,
                                          const int n2,
                                          const U* __restrict__ mean,
@@ -547,7 +547,7 @@ __device__ void cuLoadWriteStridedInputs(const int i1_block,
   }
 }
 
-template <typename T, typename U, typename V>
+template <typename T, typename U>
 __device__ void cuLoadAddStridedInputs(const int i1_block,
                                        const int thr_load_row_off,
                                        const int thr_load_col_off,
@@ -556,7 +556,7 @@ __device__ void cuLoadAddStridedInputs(const int i1_block,
                                        U* warp_buf1,
                                        U* warp_buf2,
                                        const T* input,
-                                       const V* dout,
+                                       const T* dout,
                                        const int i1_end,
                                        const int n2,
                                        const U* __restrict__ mean,
@@ -589,7 +589,7 @@ __device__ void cuLoadAddStridedInputs(const int i1_block,
 }
 
 template <typename T, typename U, typename V>
-__global__ void cuComputePartGradGammaBeta(const V* __restrict__ dout,
+__global__ void cuComputePartGradGammaBeta(const T* __restrict__ dout,
                                            const T* __restrict__ input,
                                            const int n1,
                                            const int n2,
@@ -758,7 +758,7 @@ __global__ void cuComputeGradGammaBeta(const U* part_grad_gamma,
 }
 
 template <typename T, typename U, typename V>
-__global__ void cuComputeGradInput(const V* __restrict__ dout,
+__global__ void cuComputeGradInput(const T* __restrict__ dout,
                                    const T* __restrict__ input,
                                    const int n1,
                                    const int n2,
@@ -955,8 +955,14 @@ void cuda_rms_norm(const Context& dev_ctx,
                    const float epsilon,
                    DenseTensor* out,
                    DenseTensor* invvar) {
-  int rows;
-  int cols;
+  const auto x_dims = x.dims();
+  auto matrix_dim = phi::flatten_to_2d(x_dims, x_dims.size()-1);
+  int rows = static_cast<int>(matrix_dim[0]);
+  int cols = static_cast<int>(matrix_dim[1]);     
+   
+  dev_ctx.template Alloc<T>(out);    
+  dev_ctx.template Alloc<float>(invvar);   
+
   DISPATCH_SCALE_TYPE(
       T,
       scale.dtype(),
@@ -971,8 +977,9 @@ void cuda_rms_norm(const Context& dev_ctx,
                        dev_ctx.stream()));
 }
 
-template <typename T, typename U, typename V>
-void HostRMSNormGradient(const V* dout,
+template <typename T, typename U, typename V, typename Context>
+void HostRMSNormGradient(const Context& dev_ctx,
+                         const T* dout,
                          const U* invvar,
                          const DenseTensor& input,
                          int n1,
@@ -990,9 +997,11 @@ void HostRMSNormGradient(const V* dout,
         2 * sizeof(U) * threads2.y * threads2.y * (threads2.x + 1);
     const int nshared2_b = threads2.x * threads2.y * sizeof(U);
     const int nshared2 = nshared2_a > nshared2_b ? nshared2_a : nshared2_b;
-    auto place = input.place();
-    DenseTensor part_grad_gamma;  // = paddle::empty({part_size, n2},
-                                  // paddle::DataType::FLOAT32, place);
+    auto place =  dev_ctx.GetPlace();
+    std::vector<int64_t> shape = {part_size, n2};
+    DenseTensor part_grad_gamma(&dev_ctx.GetAllocator(),
+                                phi::DenseTensorMeta(phi::DataType::FLOAT32,common::make_ddim({shape})));
+    
     cuComputePartGradGammaBeta<<<blocks2, threads2, nshared2, stream>>>(
         dout,
         input.data<T>(),
@@ -1046,13 +1055,21 @@ void cuda_rms_norm_gradient(const Context& dev_ctx,
                             const float epsilon,
                             DenseTensor* grad_x,
                             DenseTensor* grad_scale) {
-  int rows;
-  int cols;
+  const auto x_dims = x.dims();
+  auto matrix_dim = phi::flatten_to_2d(x_dims, x_dims.size()-1);
+  int rows = static_cast<int>(matrix_dim[0]);
+  int cols = static_cast<int>(matrix_dim[1]); 
+  dev_ctx.template Alloc<T>(grad_x);
+
+  DISPATCH_SCALE_TYPE(T, scale.type(), "scale grad allocate",  dev_ctx.template Alloc<SCALE_TYPE>(grad_scale));
+  
   DISPATCH_SCALE_TYPE(
       T,
       scale.type(),
       "cuda_rms_norm_gradient_kernel",
-      HostRMSNormGradient<T, float, SCALE_TYPE>(dy.data<T>(),
+      HostRMSNormGradient<T, float, SCALE_TYPE, Context>(
+                                                dev_ctx,
+                                                dy.data<T>(),
                                                 invvar.data<float>(),
                                                 x,
                                                 rows,
